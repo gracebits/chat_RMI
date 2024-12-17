@@ -1,89 +1,71 @@
+# updated
+
 import Pyro5.api
-import Pyro5.server
 import threading
 
-
-@Pyro5.api.expose
 class ChatClient:
-    def __init__(self, name, server):
+    def __init__(self, name):
         self.name = name
-        self.server = server
+        self.server = Pyro5.api.Proxy("PYRONAME:chat.server")  # Connect to the server
+        self.uri = None
+        self.daemon = Pyro5.server.Daemon()  # Create a client daemon
 
-    # Receive messages from the server or other clients
+    @Pyro5.api.expose
     def receive_message(self, sender, message):
-        print(f"\n[{sender}] {message}")
+        """Receive a broadcast message."""
+        print(f"\n{sender}: {message}")
 
-    # Send a broadcast message
-    def send_broadcast(self, message):
-        try:
-            self.server.broadcast_message(self.name, message)
-        except Exception as e:
-            print(f"Error sending broadcast message: {e}")
+    @Pyro5.api.expose
+    def receive_invitation(self, sender):
+        """Handle a private chat invitation."""
+        print(f"\n[INVITE] {sender} invites you to a private chat.")
+        choice = input("Accept invitation? (yes/no): ").strip().lower()
+        return "accepted" if choice == "yes" else "rejected"
 
-    # Send a private message
-    def send_private_message(self, recipient, message):
-        try:
-            self.server.private_message(self.name, recipient, message)
-        except Exception as e:
-            print(f"Error sending private message: {e}")
+    def register_with_server(self):
+        """Register this client with the server."""
+        self.uri = self.daemon.register(self)  # Register client object with daemon
+        response = self.server.register_client(self.name, self.uri)
+        print(response)
 
+    def user_input_loop(self):
+        """Handle user commands."""
+        while True:
+            try:
+                user_input = input("\n> ").strip()
+                if user_input.startswith("send "):
+                    message = user_input[5:]
+                    self.server.broadcast_message(self.name, message)
+                elif user_input.startswith("invite "):
+                    target = user_input[7:].strip()
+                    response = self.server.invite_to_private_chat(self.name, target)
+                    print(f"[SERVER RESPONSE] {response}")
+                elif user_input == "exit":
+                    self.server.unregister_client(self.name)
+                    print("Disconnected from server. Goodbye!")
+                    break
+                else:
+                    print("Invalid command. Use 'send <message>' or 'invite <client>'. Type 'exit' to leave.")
+            except KeyboardInterrupt:
+                self.server.unregister_client(self.name)
+                print("\nDisconnected. Goodbye!")
+                break
 
+    def start(self):
+        """Start the chat client."""
+        threading.Thread(target=self.daemon.requestLoop, daemon=True).start()
+        self.register_with_server()
+        print("Available commands:\n - send <message>\n - invite <client>\n - exit")
+        self.user_input_loop()
+
+# Start the client
 def main():
     name = input("Enter your name: ").strip()
     if not name:
-        print("Name cannot be empty!")
+        print("Name cannot be empty. Restart the client.")
         return
-
-    try:
-        # Connect to the Pyro server
-        server = Pyro5.api.Proxy("PYRONAME:chat.server")
-        print("Connecting to the chat server...")
-
-        # Create the client instance
-        client = ChatClient(name, server)
-
-        # Register the client with the server
-        daemon = Pyro5.server.Daemon()
-        uri = daemon.register(client)  # Register client object with Pyro
-        ns = Pyro5.api.locate_ns()
-        ns.register(f"chat.client.{name}", uri)  # Register with the name server
-        print(f"Successfully registered as '{name}'.")
-
-        print(server.register_client(name, uri))
-
-        # Start a thread to handle incoming messages
-        threading.Thread(target=daemon.requestLoop, daemon=True).start()
-
-        # Chat commands
-        print("\nCommands:")
-        print("  /msg <message>          - Broadcast message to all clients")
-        print("  /private <name> <msg>   - Send a private message")
-        print("  /list                   - List all connected clients")
-        print("  /quit                   - Exit the chat")
-
-        while True:
-            command = input("> ").strip()
-            if command.startswith("/msg "):
-                client.send_broadcast(command[5:])
-            elif command.startswith("/private "):
-                parts = command.split(maxsplit=2)
-                if len(parts) < 3:
-                    print("Usage: /private <client_name> <message>")
-                else:
-                    recipient, message = parts[1], parts[2]
-                    client.send_private_message(recipient, message)
-            elif command == "/list":
-                print("Online clients:", server.list_clients())
-            elif command == "/quit":
-                print("Exiting chat...")
-                print(server.unregister_client(name))
-                break
-            else:
-                print("Unknown command. Use /msg, /private, /list, or /quit.")
-
-    except Exception as e:
-        print(f"Error: {e}")
-
+    client = ChatClient(name)
+    client.start()
 
 if __name__ == "__main__":
     main()

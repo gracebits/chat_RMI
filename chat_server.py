@@ -1,63 +1,65 @@
 import Pyro5.api
-import Pyro5.server
-
 
 @Pyro5.api.expose
 class ChatServer:
     def __init__(self):
-        self.clients = {}  # Dictionary to store client_name: client_uri
+        self.clients = {}  # {normalized_name: (actual_name, uri)}
 
-    # Register a new client
     def register_client(self, name, uri):
-        if name in self.clients:
-            return f"Error: Client name '{name}' already exists."
-        self.clients[name] = uri
-        print(f"Client '{name}' registered with URI: {uri}")
-        return f"Client '{name}' registered successfully."
+        """Register a client with the server."""
+        normalized_name = name.lower()  # Store names in lowercase
+        if normalized_name not in self.clients:
+            self.clients[normalized_name] = (name, uri)  # Store both actual name and URI
+            print(f"[SERVER] {name} has joined the chat. Active clients: {self.get_active_client_names()}")
+            return f"Welcome {name}! Type 'send <message>' to chat or 'invite <client>' to private chat."
+        return "Name already taken. Try another name."
 
-    # Unregister a client
-    def unregister_client(self, name):
-        if name in self.clients:
-            del self.clients[name]
-            print(f"Client '{name}' unregistered.")
-            return f"Client '{name}' unregistered successfully."
-        else:
-            return f"Error: Client '{name}' not found."
+    def get_active_client_names(self):
+        """Return the list of actual active client names."""
+        return [info[0] for info in self.clients.values()]
 
-    # List all connected clients
-    def list_clients(self):
-        return list(self.clients.keys())
-
-    # Broadcast a message to all clients
     def broadcast_message(self, sender, message):
-        print(f"[Broadcast] {sender}: {message}")
-        for name, uri in self.clients.items():
-            if name != sender:
-                client = Pyro5.api.Proxy(uri)
-                client.receive_message(sender, message)
+        """Broadcast a message to all clients."""
+        print(f"[BROADCAST] {sender}: {message}")
+        for normalized_name, (actual_name, uri) in self.clients.items():
+            if actual_name != sender:  # Avoid sending the message back to the sender
+                try:
+                    client = Pyro5.api.Proxy(uri)
+                    client.receive_message(sender, message)
+                except Exception as e:
+                    print(f"[ERROR] Could not send message to {actual_name}: {e}")
 
-    # Send a private message
-    def private_message(self, sender, recipient, message):
-        if recipient in self.clients:
-            client = Pyro5.api.Proxy(self.clients[recipient])
-            client.receive_message(sender, f"[Private] {message}")
-            print(f"[Private] {sender} to {recipient}: {message}")
-        else:
-            print(f"Private message failed: Client '{recipient}' not found.")
-            raise ValueError(f"Client '{recipient}' not found.")
+    def invite_to_private_chat(self, sender, target):
+        """Invite another client to a private chat."""
+        target_normalized = target.lower()
+        sender_normalized = sender.lower()
 
+        if target_normalized in self.clients:
+            actual_target_name, target_uri = self.clients[target_normalized]
+            try:
+                target_client = Pyro5.api.Proxy(target_uri)
+                response = target_client.receive_invitation(sender)
+                return f"{actual_target_name} responded: {response}"
+            except Exception as e:
+                print(f"[ERROR] Failed to send invitation to {actual_target_name}: {e}")
+                return f"Could not reach {actual_target_name}."
+        return f"{target} is not online."
 
+    def unregister_client(self, name):
+        """Remove a client from the active list."""
+        normalized_name = name.lower()
+        if normalized_name in self.clients:
+            del self.clients[normalized_name]
+            print(f"[SERVER] {name} has disconnected. Active clients: {self.get_active_client_names()}")
+
+# Start the server
 def main():
-    # Create a Pyro server instance
-    server = ChatServer()
-    daemon = Pyro5.server.Daemon()
-    ns = Pyro5.api.locate_ns()  # Locate the Pyro name server
-    uri = daemon.register(server)  # Register the server object
-    ns.register("chat.server", uri)  # Register with the name server
-    print("Chat server is ready.")
-    print(f"URI: {uri}")
-    daemon.requestLoop()  # Start the server loop
-
+    daemon = Pyro5.server.Daemon()  # Pyro5 Daemon
+    ns = Pyro5.api.locate_ns()  # Locate Pyro5 name server
+    uri = daemon.register(ChatServer)  # Register the server object
+    ns.register("chat.server", uri)  # Register with name server
+    print("[SERVER] Chat server is running...")
+    daemon.requestLoop()
 
 if __name__ == "__main__":
     main()
